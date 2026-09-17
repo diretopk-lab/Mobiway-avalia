@@ -41,7 +41,7 @@
       vehicle:{plate:'',vin:'',brand:'',model:'',version:'',year:new Date().getFullYear()-5,month:'',fuel:'Diesel',engine:'',power:'',gearbox:'Manual',km:'',origin:'Nacional',owners:'',askingPrice:'',notes:''},
       photos:[],
       condition:{body:'mid',interior:'mid',tyres:'mid',engine:'mid',gearbox:'mid',brakes:'mid',history:'unknown',warningLights:'none',keys:'2',accidents:'unknown',knownFaults:'',mechanicalCost:0,bodyCost:0,tyresCost:0,otherRepairCost:0},
-      comps:[], marketOverride:'',
+      comps:[], marketOverride:'', marketAI:null, marketAILoading:false, marketAIError:'',
       finance:{service:settings.defaultService,detailing:settings.defaultDetailing,warranty:settings.warrantyReserve,admin:settings.adminCost,stockDays:settings.expectedStockDays,stockMonthly:settings.stockMonthly,other:0,customRisk:0},
       purchase:{decision:'',actualPurchasePrice:'',actualRepairCost:'',actualSalePrice:'',saleDate:'',warrantyActual:'',notes:''}
     };
@@ -174,12 +174,14 @@
 
   function rating(label,path,value,sub){return `<div class="rangeRow"><div><strong>${label}</strong><small>${sub}</small></div><div class="ratingBtns">${[['good','Bom'],['mid','Médio'],['bad','Mau']].map(([v,l])=>`<button class="${value===v?`sel ${v}`:''}" onclick="Mobiway.setRating('${path}','${v}')">${l}</button>`).join('')}</div></div>`}
 
-  function stepMarket(d){ const r=marketStats(d); return `<div class="panel"><div class="panelTitle"><div><h3>Comparáveis portugueses</h3><div class="hint">Introduz anúncios realmente comparáveis: mesma geração, motor, caixa e equipamento semelhante.</div></div><button class="ghostBtn" onclick="Mobiway.addComp()">＋ Adicionar</button></div>
-    ${d.comps.length?`<div style="overflow:auto"><table class="compTable"><thead><tr><th>Fonte</th><th>Ano</th><th>Km</th><th>Preço</th><th></th></tr></thead><tbody>${d.comps.map((c,i)=>`<tr><td><input data-comp="${i}.source" value="${esc(c.source||'')}"></td><td><input data-comp="${i}.year" type="number" value="${esc(c.year||'')}"></td><td><input data-comp="${i}.km" type="number" value="${esc(c.km||'')}"></td><td><input data-comp="${i}.price" type="number" value="${esc(c.price||'')}"></td><td><button onclick="Mobiway.removeComp(${i})">×</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">Ainda sem comparáveis. Adiciona pelo menos 3 anúncios para uma avaliação mais robusta.</div>`}
+  function stepMarket(d){ const ai=d.marketAI||null; const loading=!!d.marketAILoading; const err=d.marketAIError||''; const comps=(ai&&Array.isArray(ai.comparables))?ai.comparables:[]; return `<div class="panel marketAuto"><div class="panelTitle"><div><h3>Pesquisa automática de mercado</h3><div class="hint">A MOBIWAY consulta autonomamente anúncios atuais em Portugal e calcula uma referência de venda a retalho.</div></div><span class="badge ${ai?'green':'orange'}">${ai?'ONLINE':'IA + WEB'}</span></div>
+    ${loading?`<div class="marketLoading"><div class="spinner"></div><div><strong>A pesquisar o mercado português…</strong><p>A comparar marca, modelo, versão, ano, motor, caixa e quilometragem.</p></div></div>`:''}
+    ${err?`<div class="callout dangerish"><strong>Não foi possível concluir a pesquisa</strong><p>${esc(err)}</p><button class="ghostBtn" onclick="Mobiway.autoMarket(true)">Tentar novamente</button></div>`:''}
+    ${ai?`<div class="grid"><div class="card"><span class="badge green">VALOR DE MERCADO</span><div class="metric">${fmt.format(ai.marketValue||0)}</div><p>estimativa central de venda a retalho</p></div><div class="card"><span class="badge">INTERVALO</span><div class="metric smallMetric">${fmt.format(ai.low||0)} – ${fmt.format(ai.high||0)}</div><p>faixa observada/ajustada</p></div><div class="card"><span class="badge ${Number(ai.confidence)>=75?'green':'orange'}">CONFIANÇA</span><div class="metric">${Number(ai.confidence)||0}%</div><p>${Number(ai.comparablesCount)||comps.length} comparáveis</p></div></div><div class="marketSummary"><strong>Leitura MOBIWAY</strong><p>${esc(ai.summary||'Pesquisa concluída.')}</p><small>Atualizado: ${ai.researchedAt?new Date(ai.researchedAt).toLocaleString('pt-PT'):'agora'}</small></div>`:`${!loading&&!err?`<div class="empty">A pesquisa inicia automaticamente ao entrar neste passo.</div>`:''}`}
+    ${comps.length?`<div style="overflow:auto;margin-top:14px"><table class="compTable"><thead><tr><th>Anúncio</th><th>Ano</th><th>Km</th><th>Preço</th></tr></thead><tbody>${comps.slice(0,8).map(c=>`<tr><td>${c.url?`<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title||'Comparável')} ↗</a>`:esc(c.title||'Comparável')}</td><td>${esc(c.year||'—')}</td><td>${c.km?Number(c.km).toLocaleString('pt-PT'):'—'}</td><td>${c.price?fmt.format(c.price):'—'}</td></tr>`).join('')}</tbody></table></div>`:''}
+    <div class="heroActions" style="margin-top:14px"><button class="primaryBtn" onclick="Mobiway.autoMarket(true)">↻ ATUALIZAR PESQUISA</button><button class="ghostBtn" onclick="Mobiway.marketSearch()">Ver pesquisa no Google ↗</button></div>
   </div>
-  <div class="grid"><div class="card"><span class="badge">MEDIANA</span><div class="metric">${fmt.format(r.median)}</div><p>${r.count} comparáveis válidos</p></div><div class="card"><span class="badge orange">AJUSTADO</span><div class="metric">${fmt.format(r.adjusted)}</div><p>ponderação por ano e quilometragem</p></div><div class="card"><span class="badge ${r.confidence>=75?'green':'orange'}">CONFIANÇA</span><div class="metric">${r.confidence}%</div><p>qualidade da amostra</p></div></div>
-  <div class="panel" style="margin-top:14px"><div class="formGrid">${euroField('Valor de mercado manual (opcional)','marketOverride',d.marketOverride,'full')}</div><p class="hint" style="margin-top:10px">Se preenchido, substitui a estimativa estatística. Útil quando tens informação comercial mais forte do que a amostra de anúncios.</p></div>
-  <div class="callout"><strong>Pesquisa externa</strong><div class="big">Mercado português</div><p>Usa o botão para abrir uma pesquisa com marca, modelo, versão e ano. Depois adiciona os anúncios comparáveis ao quadro.</p><button class="ghostBtn" style="margin-top:12px" onclick="Mobiway.marketSearch()">Pesquisar comparáveis ↗</button></div>`}
+  <details class="panel advancedMarket" style="margin-top:14px"><summary>Opções avançadas / correção manual</summary><div class="formGrid" style="margin-top:14px">${euroField('Valor manual de exceção','marketOverride',d.marketOverride,'full')}</div><p class="hint" style="margin-top:10px">Só usar quando existir informação comercial concreta que justifique substituir a pesquisa automática.</p></details>`}
 
   function stepFinance(d){ const f=d.finance, risk=calcRisk(d), m=effectiveMarket(d); return `<div class="grid"><div class="card wide"><h3>Preparação prevista</h3><div class="formGrid" style="margin-top:12px">
     ${euroField('Revisão / manutenção','finance.service',f.service)}${euroField('Detailing','finance.detailing',f.detailing)}
@@ -252,7 +254,7 @@
     return {count,median:Math.round(med),adjusted:Math.round(adj),confidence};
   }
 
-  function effectiveMarket(d){const s=marketStats(d); const ov=num(d.marketOverride); return {value:ov||s.adjusted||s.median||num(d.vehicle.askingPrice),confidence:ov?78:s.confidence,source:ov?'manual':'comparables'};}
+  function effectiveMarket(d){const s=marketStats(d); const ov=num(d.marketOverride); const ai=d.marketAI||{}; const av=num(ai.marketValue); return {value:ov||av||s.adjusted||s.median||num(d.vehicle.askingPrice),confidence:ov?78:(av?clamp(num(ai.confidence)||70,35,97):s.confidence),source:ov?'manual':(av?'ai-web':'comparables')};}
 
   function calculate(d){
     const market=effectiveMarket(d), risk=calcRisk(d), c=d.condition, f=d.finance;
@@ -319,13 +321,25 @@
     prevStep(){if(state.step===1)return this.cancelWizard();state.step--;render();window.scrollTo(0,0)},
     nextStep(){
       if(state.step===1){const v=state.draft.vehicle;if(!v.brand||!v.model||!v.year||!v.km){toast('Preenche marca, modelo, ano e quilómetros.');return;}}
-      if(state.step<6){state.step++;render();window.scrollTo(0,0);return;}
+      if(state.step<6){state.step++;render();window.scrollTo(0,0);if(state.step===4 && !state.draft.marketAI && !state.draft.marketAILoading)setTimeout(()=>this.autoMarket(false),120);return;}
       persistEvaluation(state.draft); state.editingId=state.draft.id; state.view='detail'; state.draft=null; render(); window.scrollTo(0,0); toast('Avaliação guardada.');
     },
     setRating(path,v){setPath(state.draft,path,v);renderWizard()},
     addComp(){state.draft.comps.push({source:'',year:state.draft.vehicle.year,km:state.draft.vehicle.km,price:''});renderWizard()},
     removeComp(i){state.draft.comps.splice(i,1);renderWizard()},
-    marketSearch(){const v=state.draft.vehicle;const q=encodeURIComponent(`${v.brand} ${v.model} ${v.version||''} ${v.year} usados Portugal`);window.open(`https://www.google.com/search?q=${q}`,'_blank')},
+    async autoMarket(force=false){
+      const d=state.draft;if(!d)return;if(d.marketAILoading)return;if(d.marketAI&&!force)return;
+      const v=d.vehicle;d.marketAILoading=true;d.marketAIError='';renderWizard();
+      try{
+        const r=await fetch('https://mobiway-avalia-api-mobiway.vercel.app/api/market',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({make:v.brand,model:v.model,version:v.version,engine:v.engine,fuel:v.fuel,transmission:v.gearbox,year:v.year,mileage:v.km,power:v.power,notes:v.notes})});
+        const data=await r.json().catch(()=>({}));
+        if(!r.ok)throw new Error(data.error||`Erro de pesquisa (${r.status})`);
+        if(!data.marketValue)throw new Error('A pesquisa não devolveu um valor de mercado utilizável.');
+        d.marketAI=data;d.marketAIError='';toast('Mercado atualizado automaticamente.');
+      }catch(e){d.marketAIError=e&&e.message?e.message:'Falha na pesquisa automática de mercado.';}
+      finally{d.marketAILoading=false;d.updatedAt=new Date().toISOString();renderWizard();}
+    },
+    marketSearch(){const v=state.draft.vehicle;const q=encodeURIComponent(`${v.brand} ${v.model} ${v.version||''} ${v.engine||''} ${v.year} ${v.km||''} usados Portugal`);window.open(`https://www.google.com/search?q=${q}`,'_blank')},
     takePhoto(){const x=document.getElementById('photoInput');x.value='';x.click()},
     pickPhotos(){const x=document.getElementById('galleryInput');x.value='';x.click()},
     removePhoto(i){state.draft.photos.splice(i,1);renderWizard()},
