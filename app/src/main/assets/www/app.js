@@ -328,25 +328,79 @@
     addComp(){state.draft.comps.push({source:'',year:state.draft.vehicle.year,km:state.draft.vehicle.km,price:''});renderWizard()},
     removeComp(i){state.draft.comps.splice(i,1);renderWizard()},
     async autoMarket(force=false){
-      const d=state.draft;if(!d)return;if(d.marketAILoading)return;if(d.marketAI&&!force)return;
-      const v=d.vehicle;d.marketAILoading=true;d.marketAIError='';renderWizard();
-      try{
-      const body=new
+  const d=state.draft;
+  if(!d)return;
+  if(d.marketAILoading)return;
+  if(d.marketAI&&!force)return;
 
-URLSearchParams({make:v.brand, model:v.model, version:v.version||",engine:v.engine||",fuel:v.fuel||", transmission:v.gearbox||'',year:String(v.year||"), mil eage:String(v.km||''),power:String(v.power||''),not es:v.notes||"});
+  const v=d.vehicle;
+  d.marketAILoading=true;
+  d.marketAIError='';
+  renderWizard();
 
-const r=await
+  try{
+    const form=new URLSearchParams();
+    const payload={
+      make:v.brand,
+      model:v.model,
+      version:v.version,
+      engine:v.engine,
+      fuel:v.fuel,
+      transmission:v.gearbox,
+      year:v.year,
+      mileage:v.km,
+      power:v.power,
+      notes:v.notes
+    };
 
-fetch('https://mobiway-avalia-api.vercel.app/api /market', {method:'POST',body});
+    Object.entries(payload).forEach(([k,val])=>
+      form.append(k,val==null?'':String(val))
+    );
 
-fetch('https://mobiway-avalia-api.vercel.app/api /market', {method:'POST',body});
-        const data=await r.json().catch(()=>({}));
-        if(!r.ok)throw new Error(data.error||`Erro de pesquisa (${r.status})`);
-        if(!data.marketValue)throw new Error('A pesquisa não devolveu um valor de mercado utilizável.');
-        d.marketAI=data;d.marketAIError='';toast('Mercado atualizado automaticamente.');
-      }catch(e){d.marketAIError=e&&e.message?e.message:'Falha na pesquisa automática de mercado.';}
-      finally{d.marketAILoading=false;d.updatedAt=new Date().toISOString();renderWizard();}
-    },
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),45000);
+
+    let r;
+    try{
+      r=await fetch(
+        'https://mobiway-avalia-api.vercel.app/api/market',
+        {
+          method:'POST',
+          body:form,
+          signal:controller.signal
+        }
+      );
+    }finally{
+      clearTimeout(timer);
+    }
+
+    const data=await r.json().catch(()=>({}));
+
+    if(!r.ok)
+      throw new Error(data.error||`Erro de pesquisa (${r.status})`);
+
+    if(!data.marketValue)
+      throw new Error('A pesquisa não devolveu um valor de mercado utilizável.');
+
+    d.marketAI=data;
+    d.marketAIError='';
+    toast('Mercado atualizado automaticamente.');
+
+  }catch(e){
+    const msg=
+      e&&e.name==='AbortError'
+        ? 'A pesquisa demorou demasiado. Tenta novamente.'
+        : (e&&e.message
+            ? e.message
+            : 'Falha na pesquisa automática de mercado.');
+
+    d.marketAIError=msg;
+  }finally{
+    d.marketAILoading=false;
+    d.updatedAt=new Date().toISOString();
+    renderWizard();
+  }
+},
     marketSearch(){const v=state.draft.vehicle;const q=encodeURIComponent(`${v.brand} ${v.model} ${v.version||''} ${v.engine||''} ${v.year} ${v.km||''} usados Portugal`);window.open(`https://www.google.com/search?q=${q}`,'_blank')},
     takePhoto(){const x=document.getElementById('photoInput');x.value='';x.click()},
     pickPhotos(){const x=document.getElementById('galleryInput');x.value='';x.click()},
