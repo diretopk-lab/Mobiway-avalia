@@ -40,6 +40,7 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setAllowFileAccess(true);
+        s.setAllow UniversalAccess FromFileURLs (true);
         s.setAllowContentAccess(true);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setSupportMultipleWindows(true);
