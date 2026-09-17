@@ -180,4 +180,126 @@ Responde APENAS em JSON válido neste formato:
         },
 
         body: JSON.stringify({
-          model: 'openai/gpt-
+                    model: 'openai/gpt-5.6-sol',
+          input: prompt,
+
+          tools: [
+            {
+              type: 'web_search_preview',
+              search_context_size: 'high',
+              user_location: {
+                type: 'approximate',
+                country: 'PT'
+              }
+            }
+          ]
+        })
+      }
+    );
+
+  } catch (e) {
+    return res.status(502).json({
+      error:
+        'Falha de ligação ao AI Gateway: ' +
+        (e?.message || 'erro desconhecido')
+    });
+  }
+
+  const raw = await gateway.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = null;
+  }
+
+  if (!gateway.ok) {
+    const detail =
+      data?.error?.message ||
+      data?.error ||
+      raw.slice(0, 500) ||
+      `HTTP ${gateway.status}`;
+
+    return res.status(502).json({
+      error: `AI Gateway: ${detail}`
+    });
+  }
+
+  const text = textFromResponse(data);
+
+  if (!text) {
+    return res.status(502).json({
+      error: 'A IA não devolveu uma avaliação utilizável.'
+    });
+  }
+
+  let result;
+
+  try {
+    result = JSON.parse(text);
+
+  } catch {
+
+    const match = text.match(/\{[\s\S]*\}/);
+
+    try {
+      result = match
+        ? JSON.parse(match[0])
+        : null;
+
+    } catch {
+      result = null;
+    }
+  }
+
+  if (!result || !Number(result.marketValue)) {
+    return res.status(502).json({
+      error: 'A resposta da IA não contém um valor de mercado válido.'
+    });
+  }
+
+  return res.status(200).json({
+    ...result,
+
+    marketValue:
+      Math.round(Number(result.marketValue)),
+
+    low:
+      Math.round(
+        Number(result.low || result.marketValue)
+      ),
+
+    high:
+      Math.round(
+        Number(result.high || result.marketValue)
+      ),
+
+    confidence:
+      Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(Number(result.confidence || 0))
+        )
+      ),
+
+    comparablesCount:
+      Math.max(
+        0,
+        Math.round(
+          Number(result.comparablesCount || 0)
+        )
+      ),
+
+    sources:
+      sourcesFromResponse(data),
+
+    researchedAt:
+      new Date().toISOString(),
+
+    currency:
+      'EUR'
+  });
+};
