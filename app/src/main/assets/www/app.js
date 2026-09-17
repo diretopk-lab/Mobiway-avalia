@@ -331,7 +331,13 @@
       const d=state.draft;if(!d)return;if(d.marketAILoading)return;if(d.marketAI&&!force)return;
       const v=d.vehicle;d.marketAILoading=true;d.marketAIError='';renderWizard();
       try{
-        const body=new URLSearchParams({make:v.brand,model:v.model,version:v.version||'',engine:v.engine||'',fuel:v.fuel||'',transmission:v.gearbox||'',year:String(v.year||''),mileage:String(v.km||''),power:String(v.power||''),notes:v.notes||''});const r=await
+      const body=new
+
+URLSearchParams({make:v.brand, model:v.model, version:v.version||",engine:v.engine||",fuel:v.fuel||", transmission:v.gearbox||'',year:String(v.year||"), mil eage:String(v.km||''),power:String(v.power||''),not es:v.notes||"});
+
+const r=await
+
+fetch('https://mobiway-avalia-api.vercel.app/api /market', {method:'POST',body});
 
 fetch('https://mobiway-avalia-api.vercel.app/api /market', {method:'POST',body});
         const data=await r.json().catch(()=>({}));
