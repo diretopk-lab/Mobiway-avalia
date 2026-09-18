@@ -7,64 +7,95 @@ function cors(res) {
 
 function parseBody(req) {
   if (!req.body) return {};
-  if (typeof req.body === 'object' && !Buffer.isBuffer(req.body)) return req.body;
-  const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body);
-  const type = String(req.headers['content-type'] || '').toLowerCase();
+
+  if (
+    typeof req.body === 'object' &&
+    !Buffer.isBuffer(req.body)
+  ) {
+    return req.body;
+  }
+
+  const raw = Buffer.isBuffer(req.body)
+    ? req.body.toString('utf8')
+    : String(req.body);
+
+  const type = String(
+    req.headers['content-type'] || ''
+  ).toLowerCase();
 
   try {
-    if (type.includes('application/json')) return JSON.parse(raw || '{}');
-    return Object.fromEntries(new URLSearchParams(raw));
+    if (type.includes('application/json')) {
+      return JSON.parse(raw || '{}');
+    }
+
+    return Object.fromEntries(
+      new URLSearchParams(raw)
+    );
   } catch {
     return {};
   }
 }
 
-function textFromResponse(data) {
-  let out = '';
+function textFromGemini(data) {
+  const parts =
+    data?.candidates?.[0]?.content?.parts || [];
 
-  for (const item of data?.output || []) {
-    if (item?.type !== 'message') continue;
-
-    for (const part of item.content || []) {
-      if (part?.type === 'output_text' && typeof part.text === 'string') {
-        out += part.text;
-      }
-    }
-  }
-
-  return out.trim();
+  return parts
+    .map(part =>
+      typeof part?.text === 'string'
+        ? part.text
+        : ''
+    )
+    .join('')
+    .trim();
 }
 
-function sourcesFromResponse(data) {
+function sourcesFromGemini(data) {
+  const chunks =
+    data?.candidates?.[0]
+      ?.groundingMetadata
+      ?.groundingChunks || [];
+
   const map = new Map();
 
-  for (const item of data?.output || []) {
-    if (item?.type === 'web_search_call') {
-      for (const s of item?.action?.sources || []) {
-        if (s?.url) {
-          map.set(s.url, {
-            title: s.title || s.url,
-            url: s.url
-          });
-        }
-      }
-    }
+  for (const chunk of chunks) {
+    const web = chunk?.web;
 
-    if (item?.type === 'message') {
-      for (const part of item.content || []) {
-        for (const a of part?.annotations || []) {
-          if (a?.type === 'url_citation' && a?.url) {
-            map.set(a.url, {
-              title: a.title || a.url,
-              url: a.url
-            });
-          }
-        }
-      }
+    if (web?.uri) {
+      map.set(web.uri, {
+        title: web.title || web.uri,
+        url: web.uri
+      });
     }
   }
 
   return [...map.values()].slice(0, 12);
+}
+
+function parseJsonText(text) {
+  if (!text) return null;
+
+  let clean = String(text).trim();
+
+  clean = clean
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(clean);
+  } catch {}
+
+  const match = clean.match(/\{[\s\S]*\}/);
+
+  if (!match) return null;
+
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
 }
 
 module.exports = async function handler(req, res) {
@@ -78,6 +109,8 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       service: 'MOBIWAY Avalia Market API',
+      provider: 'Google Gemini',
+      model: 'gemini-2.5-flash',
       route: '/api/market',
       time: new Date().toISOString()
     });
@@ -98,17 +131,17 @@ module.exports = async function handler(req, res) {
 
   if (!make || !model || !year || !mileage) {
     return res.status(400).json({
-      error: 'Marca, modelo, ano e quilometragem são obrigatórios.'
+      error:
+        'Marca, modelo, ano e quilometragem são obrigatórios.'
     });
   }
 
-  const token =
-    process.env.AI_GATEWAY_API_KEY ||
-    process.env.VERCEL_OIDC_TOKEN;
+  const apiKey = process.env.GEMINI_API_KEY;
 
-  if (!token) {
+  if (!apiKey) {
     return res.status(500).json({
-      error: 'AI Gateway não está autenticado. Configure AI_GATEWAY_API_KEY no Vercel.'
+      error:
+        'Gemini não está autenticado. Configure GEMINI_API_KEY no Vercel.'
     });
   }
 
@@ -118,7 +151,9 @@ module.exports = async function handler(req, res) {
     version: String(body.version || '').trim(),
     engine: String(body.engine || '').trim(),
     fuel: String(body.fuel || '').trim(),
-    transmission: String(body.transmission || '').trim(),
+    transmission: String(
+      body.transmission || ''
+    ).trim(),
     year,
     mileage,
     power: String(body.power || '').trim(),
@@ -126,26 +161,58 @@ module.exports = async function handler(req, res) {
   };
 
   const prompt = `
-És um avaliador profissional de automóveis usados para um comerciante em Portugal.
+És um avaliador profissional de automóveis usados
+para um comerciante automóvel em Portugal.
 
-Pesquisa anúncios ATUAIS no mercado português para uma viatura comparável a esta:
+Usa a Pesquisa Google para encontrar anúncios ATUAIS
+em Portugal de viaturas comparáveis à seguinte:
 
 ${JSON.stringify(vehicle, null, 2)}
 
-Objetivo:
+OBJETIVO:
+
 Estimar o VALOR DE VENDA A RETALHO realista em Portugal.
 
-Regras:
-- pesquisa prioritariamente anúncios portugueses atuais;
-- privilegia mesma marca, modelo, geração, motor, combustível e caixa;
-- compara anos e quilometragens semelhantes;
-- elimina anúncios fora do padrão e duplicados;
-- devolve valor central, mínimo, máximo e confiança;
-- indica número de anúncios comparáveis;
-- explica resumidamente os ajustamentos;
-- inclui URLs dos anúncios quando disponíveis.
+Não calcular valor de retoma.
+Não calcular valor de compra profissional.
 
-Responde APENAS em JSON válido neste formato:
+REGRAS:
+
+- pesquisa anúncios atuais em Portugal;
+- privilegia Standvirtual, PiscaPisca, OLX Autos,
+  AutoUncle, concessionários e outros sites portugueses;
+- privilegia mesma marca, modelo e geração;
+- privilegia mesma motorização;
+- privilegia mesmo combustível;
+- privilegia mesma caixa de velocidades;
+- compara anos próximos;
+- compara quilometragens próximas;
+- elimina anúncios duplicados;
+- elimina anúncios manifestamente fora do mercado;
+- elimina viaturas sinistradas;
+- elimina viaturas para peças;
+- elimina anúncios claramente não comparáveis;
+- não inventes anúncios;
+- não inventes URLs;
+- se não conseguires confirmar um URL,
+  coloca uma string vazia;
+- marketValue representa o preço de venda
+  a retalho estimado;
+- low e high representam uma faixa de mercado
+  realista;
+- confidence deve ser um número inteiro entre 0 e 100;
+- comparablesCount deve representar o número de
+  anúncios úteis efetivamente considerados;
+- summary deve explicar resumidamente os principais
+  ajustamentos efetuados.
+
+Responde APENAS com JSON válido.
+
+Não uses markdown.
+Não uses blocos de código.
+Não escrevas texto antes ou depois do JSON.
+
+Formato obrigatório:
 
 {
   "marketValue": 0,
@@ -166,33 +233,41 @@ Responde APENAS em JSON válido neste formato:
 }
 `;
 
-  let gateway;
+  let response;
 
   try {
-    gateway = await fetch(
-      'https://ai-gateway.vercel.sh/v1/responses',
+    response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
       {
         method: 'POST',
 
         headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
         },
 
         body: JSON.stringify({
-                    model: 'openai/gpt-5.6-sol',
-          input: prompt,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: prompt
+                }
+              ]
+            }
+          ],
 
           tools: [
             {
-              type: 'web_search_preview',
-              search_context_size: 'high',
-              user_location: {
-                type: 'approximate',
-                country: 'PT'
-              }
+              google_search: {}
             }
-          ]
+          ],
+
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 4096
+          }
         })
       }
     );
@@ -200,12 +275,12 @@ Responde APENAS em JSON válido neste formato:
   } catch (e) {
     return res.status(502).json({
       error:
-        'Falha de ligação ao AI Gateway: ' +
+        'Falha de ligação ao Gemini: ' +
         (e?.message || 'erro desconhecido')
     });
   }
 
-  const raw = await gateway.text();
+  const raw = await response.text();
 
   let data;
 
@@ -215,65 +290,84 @@ Responde APENAS em JSON válido neste formato:
     data = null;
   }
 
-  if (!gateway.ok) {
+  if (!response.ok) {
     const detail =
       data?.error?.message ||
-      data?.error ||
+      data?.error?.status ||
       raw.slice(0, 500) ||
-      `HTTP ${gateway.status}`;
+      `HTTP ${response.status}`;
 
     return res.status(502).json({
-      error: `AI Gateway: ${detail}`
+      error: `Gemini: ${detail}`
     });
   }
 
-  const text = textFromResponse(data);
+  const text = textFromGemini(data);
 
-  if (!text) {
+  const result = parseJsonText(text);
+
+  if (
+    !result ||
+    !Number(result.marketValue)
+  ) {
     return res.status(502).json({
-      error: 'A IA não devolveu uma avaliação utilizável.'
+      error:
+        'A resposta do Gemini não contém um valor de mercado válido.'
     });
   }
 
-  let result;
+  const sources =
+    sourcesFromGemini(data);
 
-  try {
-    result = JSON.parse(text);
+  const comparables =
+    Array.isArray(result.comparables)
+      ? result.comparables
+          .slice(0, 12)
+          .map(c => ({
+            title: String(
+              c?.title || ''
+            ),
 
-  } catch {
+            url: String(
+              c?.url || ''
+            ),
 
-    const match = text.match(/\{[\s\S]*\}/);
+            price: String(
+              c?.price || ''
+            ),
 
-    try {
-      result = match
-        ? JSON.parse(match[0])
-        : null;
+            year: String(
+              c?.year || ''
+            ),
 
-    } catch {
-      result = null;
-    }
-  }
-
-  if (!result || !Number(result.marketValue)) {
-    return res.status(502).json({
-      error: 'A resposta da IA não contém um valor de mercado válido.'
-    });
-  }
+            mileage: String(
+              c?.mileage || ''
+            )
+          }))
+      : [];
 
   return res.status(200).json({
     ...result,
 
     marketValue:
-      Math.round(Number(result.marketValue)),
+      Math.round(
+        Number(result.marketValue)
+      ),
 
     low:
       Math.round(
-        Number(result.low || result.marketValue)
+        Number(
+          result.low ||
+          result.marketValue
+        )
       ),
 
     high:
       Math.round(
-        Number(result.high || result.marketValue)
+        Number(
+          result.high ||
+          result.marketValue
+        )
       ),
 
     confidence:
@@ -281,7 +375,11 @@ Responde APENAS em JSON válido neste formato:
         0,
         Math.min(
           100,
-          Math.round(Number(result.confidence || 0))
+          Math.round(
+            Number(
+              result.confidence || 0
+            )
+          )
         )
       ),
 
@@ -289,12 +387,23 @@ Responde APENAS em JSON válido neste formato:
       Math.max(
         0,
         Math.round(
-          Number(result.comparablesCount || 0)
+          Number(
+            result.comparablesCount ||
+            comparables.length ||
+            0
+          )
         )
       ),
 
-    sources:
-      sourcesFromResponse(data),
+    comparables,
+
+    sources,
+
+    provider:
+      'Google Gemini',
+
+    model:
+      'gemini-2.5-flash',
 
     researchedAt:
       new Date().toISOString(),
