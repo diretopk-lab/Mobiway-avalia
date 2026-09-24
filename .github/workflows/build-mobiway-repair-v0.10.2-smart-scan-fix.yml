@@ -1,0 +1,59 @@
+name: Build MOBIWAY REPAIR v0.10.2 Smart Scan Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'MOBIWAY_REPAIR_v0.10.2_SMART_SCAN_FIX_SOURCE.zip'
+      - '.github/workflows/build-mobiway-repair-v0.10.2-smart-scan-fix.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK 35
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Extract source
+        run: |
+          rm -rf repair-build
+          mkdir repair-build
+          unzip -q MOBIWAY_REPAIR_v0.10.2_SMART_SCAN_FIX_SOURCE.zip -d repair-build
+
+      - name: Validate Smart Scan fix
+        run: |
+          test -f repair-build/repair/app/google-services.json
+          grep -q "versionName '0.10.2-smart-scan-fix'" repair-build/repair/app/build.gradle
+          ! grep -q 'android.permission.CAMERA' repair-build/repair/app/src/main/AndroidManifest.xml
+          grep -q 'grantUriPermission' repair-build/repair/app/src/main/java/pt/mobiway/repair/MainActivity.java
+
+      - name: Build APK
+        run: gradle -p repair-build/repair :app:assembleDebug --stacktrace
+
+      - name: Prepare APK
+        run: cp repair-build/repair/app/build/outputs/apk/debug/app-debug.apk MOBIWAY-REPAIR-v0.10.2-SMART-SCAN-FIX.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MOBIWAY-REPAIR-v0.10.2-SMART-SCAN-FIX-APK
+          path: MOBIWAY-REPAIR-v0.10.2-SMART-SCAN-FIX.apk
+          if-no-files-found: error
+          retention-days: 30
