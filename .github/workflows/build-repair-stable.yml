@@ -1,0 +1,84 @@
+name: MOBIWAY Repair 0.11.1 - stable signed migration
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'MOBIWAY_REPAIR_v0.11.1_STABLE_SOURCE.zip'
+      - '.github/workflows/build-repair-stable.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Repair stable source
+        run: unzip -q MOBIWAY_REPAIR_v0.11.1_STABLE_SOURCE.zip -d repair-build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Regression tests
+        working-directory: repair-build/repair
+        run: node --test tests/maintenance.test.cjs tests/interface.test.mjs tests/portal.test.mjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+          log-accepted-android-sdk-licenses: 'false'
+      - name: Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Load existing permanent signing key
+        env:
+          KEY_BYTES: ${{ secrets.MREPAIR_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.MREPAIR_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MREPAIR_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.MREPAIR_KEY_PASSWORD }}
+        run: |
+          test -n "$KEY_BYTES" && test -n "$STORE_PASS" && test -n "$KEY_ALIAS" && test -n "$KEY_PASS"
+          umask 077
+          printf '%s' "$KEY_BYTES" | base64 --decode > "$RUNNER_TEMP/repair-permanent.p12"
+      - name: Compile signed release and Android lint
+        working-directory: repair-build/repair
+        env:
+          MREPAIR_STORE_PASSWORD: ${{ secrets.MREPAIR_STORE_PASSWORD }}
+          MREPAIR_KEY_ALIAS: ${{ secrets.MREPAIR_KEY_ALIAS }}
+          MREPAIR_KEY_PASSWORD: ${{ secrets.MREPAIR_KEY_PASSWORD }}
+        run: |
+          export MREPAIR_KEYSTORE="$RUNNER_TEMP/repair-permanent.p12"
+          gradle --no-daemon :app:assembleRelease :app:lintRelease --stacktrace
+      - name: Verify signature, release flag and migration identity
+        run: |
+          APK=repair-build/repair/app/build/outputs/apk/release/app-release.apk
+          mkdir -p deliverables
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" > deliverables/certificate.txt
+          grep -qi '2d8eabd1b1646f0ec186a8f98288cbdfea13008c987ce6010960b33f38587f54' deliverables/certificate.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" > deliverables/package.txt
+          grep -q "name='pt.mobiway.repair'" deliverables/package.txt
+          grep -q "versionCode='19'" deliverables/package.txt
+          if grep -q 'application-debuggable' deliverables/package.txt; then exit 1; fi
+          cp "$APK" deliverables/MOBIWAY-REPAIR-v0.11.1-MIGRACAO-assinada.apk
+          cp repair-build/repair/INSTALACAO-SEGURA.txt deliverables/
+          sha256sum deliverables/*.apk > deliverables/SHA256SUMS.txt
+          echo 'Signed migration build. NOT an in-place upgrade from debug 0.10.2 (certificate 8c710759a3221a98637c7ef51578bf3e97c2d107b7d8be39811049c54bdcfbd9). Preserve and verify an external backup before replacing any existing installation.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Save verified signed migration APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MOBIWAY-REPAIR-v0.11.1-MIGRACAO-assinada
+          path: deliverables/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Repair-v0.11.1-lint
+          path: repair-build/repair/app/build/reports/lint-results-release.*
+          if-no-files-found: ignore
