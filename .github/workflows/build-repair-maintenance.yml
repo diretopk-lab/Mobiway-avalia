@@ -1,0 +1,114 @@
+name: MOBIWAY Repair 0.11 - Android verification and signed upgrade
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, repair-maintenance-0-11]
+    paths:
+      - 'MOBIWAY_REPAIR_v0.11.0_MAINTENANCE_SOURCE.zip'
+      - '.github/workflows/build-repair-maintenance.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract complete Repair 0.11 source
+        run: |
+          unzip -q MOBIWAY_REPAIR_v0.11.0_MAINTENANCE_SOURCE.zip -d repair-build
+          test -f repair-build/repair/app/google-services.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test maintenance, interface and portal
+        working-directory: repair-build/repair
+        run: node --test tests/maintenance.test.cjs tests/interface.test.mjs tests/portal.test.mjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Check signing configuration
+        id: signing
+        env:
+          KEY_BYTES: ${{ secrets.MREPAIR_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.MREPAIR_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MREPAIR_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.MREPAIR_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEY_BYTES" ] && [ -n "$STORE_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            printf '%s' "$KEY_BYTES" | base64 --decode > "$RUNNER_TEMP/repair-original.p12"
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Signing secrets are unavailable. This run validates an unsigned APK; it cannot be installed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Compile Android and run lint
+        working-directory: repair-build/repair
+        env:
+          MREPAIR_STORE_PASSWORD: ${{ secrets.MREPAIR_STORE_PASSWORD }}
+          MREPAIR_KEY_ALIAS: ${{ secrets.MREPAIR_KEY_ALIAS }}
+          MREPAIR_KEY_PASSWORD: ${{ secrets.MREPAIR_KEY_PASSWORD }}
+          SIGNING_READY: ${{ steps.signing.outputs.ready }}
+        run: |
+          if [ "$SIGNING_READY" = true ]; then
+            export MREPAIR_KEYSTORE="$RUNNER_TEMP/repair-original.p12"
+          else
+            export MREPAIR_ALLOW_UNSIGNED_BUILD=true
+          fi
+          gradle --no-daemon :app:assembleRelease :app:lintRelease --stacktrace
+      - name: Validate APK certificate and package
+        if: steps.signing.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=repair-build/repair/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/new-certificate.txt"
+          grep -qi '2d8eabd1b1646f0ec186a8f98288cbdfea13008c987ce6010960b33f38587f54' "$RUNNER_TEMP/new-certificate.txt"
+          gh run download 35996642928 --repo diretopk-lab/Mobiway-avalia --name MOBIWAY-REPAIR-v0.10.2-SMART-SCAN-FIX-APK --dir "$RUNNER_TEMP/repair-baseline"
+          OLD_APK="$RUNNER_TEMP/repair-baseline/MOBIWAY-REPAIR-v0.10.2-SMART-SCAN-FIX.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$OLD_APK" > "$RUNNER_TEMP/old-certificate.txt"
+          OLD_CERT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/old-certificate.txt")
+          NEW_CERT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/new-certificate.txt")
+          test -n "$OLD_CERT"
+          if [ "$OLD_CERT" != "$NEW_CERT" ]; then
+            echo 'The available permanent key does not match the v0.10.2 APK. An in-place upgrade cannot be published with this key.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | head -1 > "$RUNNER_TEMP/package.txt"
+          grep -q "name='pt.mobiway.repair'" "$RUNNER_TEMP/package.txt"
+          grep -q "versionCode='18'" "$RUNNER_TEMP/package.txt"
+          cp "$APK" MOBIWAY-REPAIR-v0.11.0-MAINTENANCE-signed.apk
+      - name: Preserve unsigned validation result
+        if: steps.signing.outputs.ready != 'true'
+        run: cp repair-build/repair/app/build/outputs/apk/release/app-release-unsigned.apk MOBIWAY-REPAIR-v0.11.0-UNSIGNED-NOT-INSTALLABLE.apk.unsigned
+      - name: Android lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Repair-v0.11-Android-lint
+          path: repair-build/repair/app/build/reports/lint-results-release.*
+          if-no-files-found: ignore
+      - name: Upload signed APK
+        if: steps.signing.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MOBIWAY-REPAIR-v0.11.0-MAINTENANCE-signed-APK
+          path: MOBIWAY-REPAIR-v0.11.0-MAINTENANCE-signed.apk
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload unsigned validation result
+        if: steps.signing.outputs.ready != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Repair-v0.11-UNSIGNED-NOT-INSTALLABLE
+          path: MOBIWAY-REPAIR-v0.11.0-UNSIGNED-NOT-INSTALLABLE.apk.unsigned
+          if-no-files-found: error
+          retention-days: 7
